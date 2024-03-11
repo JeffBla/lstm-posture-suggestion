@@ -1,12 +1,10 @@
 import argparse
-from multiprocessing import cpu_count
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.optim.lr_scheduler import _LRScheduler, CyclicLR
+from torch.optim.lr_scheduler import CyclicLR
 
 import lightning as L
 from torchmetrics.classification import MultilabelAccuracy
