@@ -1,0 +1,11 @@
+base_lr: 1.0e-05
+batch_size: 16
+hidden_dim: 256
+input_dim: 34
+label_threshold: 0.5
+layer_dim: 3
+lr: 0.001
+max_lr: 0.001
+n_cpu: 4
+n_epochs: 1000
+num_labels: 6
