@@ -27,7 +27,7 @@ class MotionDataset(Dataset):
         self.transform = transform
 
     def __len__(self):
-        return len(self.label_vtr_set)
+        return len(self.openpose_files_df)
 
     def __getitem__(self, idx):
         openpose_df = pd.read_csv(self.openpose_files_df[idx]).drop(
@@ -40,7 +40,7 @@ class MotionDataset(Dataset):
 
         ts = torch.tensor(ts, dtype=torch.float32)
         if self.label_vtr_set is None:
-            return ts
+            return ts[0]
         else:
             label_vtr = torch.tensor(self.label_vtr_set.iloc[idx].values,
                                      dtype=torch.float32)
@@ -68,40 +68,67 @@ class MotionDataModule(L.LightningDataModule):
 
     def setup(self, stage):
 
-        def CheckNormalize(df: pd.DataFrame, filename: str):
+        def OpenposePreprocess(df: pd.DataFrame, filename: str):
+            isSave = False
+            openpose_df = pd.read_csv(filename)
+
+            openpose_df, isSaveTmp = GetTargetColumn(openpose_df)
+            isSave = isSave or isSaveTmp
+
+            openpose_df, isSaveTmp = CheckFrameNum(openpose_df)
+            isSave = isSave or isSaveTmp
+
+            openpose_df, isSaveTmp = CheckNormalize(openpose_df)
+            isSave = isSave or isSaveTmp
+
+            openpose_df, isSaveTmp = CheckNan(openpose_df, filename)
+            isSave = isSave or isSaveTmp
+
+            if isSave:
+                openpose_df.to_csv(filename, index=False)
+            return openpose_df
+
+        def GetTargetColumn(df: pd.DataFrame):
+            isSave = False
+            target_column = "frameNumber	2DX_head	2DY_head	2DX_neck	2DY_neck	2DX_rshoulder	2DY_rshoulder	2DX_relbow	2DY_relbow	2DX_rhand	2DY_rhand	2DX_lshoulder	2DY_lshoulder	2DX_lelbow	2DY_lelbow	2DX_lhand	2DY_lhand	2DX_hip	2DY_hip	2DX_rhip	2DY_rhip	2DX_rknee	2DY_rknee	2DX_rfoot	2DY_rfoot	2DX_lhip	2DY_lhip	2DX_lknee	2DY_lknee	2DX_lfoot	2DY_lfoot	2DX_lheel	2DY_lheel	2DX_rheel	2DY_rheel".split(
+                "\t")
+            if not df.columns.equals(target_column):
+                df = df[target_column]
+                isSave = True
+            return df, isSave
+
+        def CheckNormalize(df: pd.DataFrame):
+            isSave = False
             normalized_df = (df - df.mean()) / df.std()
             if not normalized_df.equals(df):
-                normalized_df.to_csv(filename, index=False)
-                return normalized_df
-            return df
+                isSave = True
+                df = normalized_df
+            return df, isSave
 
-        def CheckFrameNum(df: pd.DataFrame, filename: str):
+        def CheckFrameNum(df: pd.DataFrame):
+            isSave = False
             if df['frameNumber'].shape[0] != self.FRAME:
                 columns = df.columns
                 ts = to_time_series_dataset([df.values])
                 ts = TimeSeriesResampler(sz=self.FRAME).fit_transform(ts)
                 df = pd.DataFrame(ts[0], columns=columns)
-                df.to_csv(filename, index=False)
-                return df
-            else:
-                return df
+                isSave = True
+            return df, isSave
 
         def CheckNan(df: pd.DataFrame, filename: str):
+            isSave = False
             if df.isnull().values.any():
                 print("NaN values found: " + filename)
-                # df.fillna(0, inplace=True)
-                # df.to_csv(filename, index=False)
-                return df
-            else:
-                return df
+                df.fillna(0, inplace=True)
+                isSave = True
+            return df, isSave
 
         if stage == 'predict':
             annotations_df = pd.read_csv(self.annotations_file)
             # Check the frame number
-            for (i, row) in annotations_df.iterrows():
-                openpose_df = pd.read_csv(row['openpose_files'])
-                CheckFrameNum(openpose_df)
-                CheckNormalize(openpose_df)
+            for (i, row) in tqdm(annotations_df.iterrows(),
+                                 total=annotations_df.shape[0]):
+                OpenposePreprocess(annotations_df, row['openpose_files'])
 
             self.pred_dataset = MotionDataset(
                 openpose_files_df=annotations_df['openpose_files'])
@@ -112,11 +139,7 @@ class MotionDataModule(L.LightningDataModule):
             # Check the frame number
             for (i, row) in tqdm(annotations_df.iterrows(),
                                  total=annotations_df.shape[0]):
-                openpose_df = pd.read_csv(row['openpose_files'])
-                openpose_df = CheckFrameNum(openpose_df, row['openpose_files'])
-                openpose_df = CheckNormalize(openpose_df,
-                                             row['openpose_files'])
-                openpose_df = CheckNan(openpose_df, row['openpose_files'])
+                OpenposePreprocess(annotations_df, row['openpose_files'])
 
             self.dataset = MotionDataset(
                 openpose_files_df=annotations_df['openpose_files'],

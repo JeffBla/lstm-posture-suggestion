@@ -125,7 +125,8 @@ class LSTMClassifier(L.LightningModule):
             'input_dim': opt.input_dim,
             'hidden_dim': opt.hidden_dim,
             'layer_dim': opt.layer_dim,
-            'label_threshold': opt.label_threshold
+            'label_threshold': opt.label_threshold,
+            'output_dim': output_dim,
         })
 
     def forward(self, x):
@@ -236,38 +237,55 @@ class LSTMClassifier(L.LightningModule):
         }
         return {'optimizer': optimizer, 'lr_scheduler': lr_scheduler_config}
 
+    @classmethod
+    def lstm_forehand_predict(cls,
+                              annotation_filepath,
+                              prev_ckpt_path,
+                              batch_size=1,
+                              n_cpu=4):
+        dm = MotionDataModule(annotations_file=annotation_filepath,
+                              batch_size=batch_size,
+                              n_cpu=n_cpu)
+        model = LSTMClassifier.load_from_checkpoint(prev_ckpt_path,
+                                                    output_dim=6,
+                                                    dm=dm)
+        trainer = L.Trainer(accelerator='auto')
+        pred = trainer.predict(model, dm)
+        return pred
 
-if opt.isTrain:
-    ################### Train #####################
-    dm = MotionDataModule(annotations_file=opt.annotations_file,
-                          batch_size=opt.batch_size,
-                          n_cpu=opt.n_cpu)
-    model = LSTMClassifier(input_dim=opt.input_dim,
-                           hidden_dim=opt.hidden_dim,
-                           layer_dim=opt.layer_dim,
-                           output_dim=opt.num_labels,
-                           dm=dm)
 
-    checkpoint_callback = ModelCheckpoint(
-        save_top_k=-1,
-        monitor='train_loss_epoch',
-        filename='resnet-{epoch:02d}-{train_loss:.4f}')
-    logger = TensorBoardLogger("tb_logs")
-    trainer = L.Trainer(accelerator='auto',
-                        max_epochs=opt.n_epochs,
-                        callbacks=[checkpoint_callback],
-                        logger=logger)
-    trainer.fit(model, dm)
+if __name__ == "__main__":
+    if opt.isTrain:
+        ################### Train #####################
+        dm = MotionDataModule(annotations_file=opt.annotations_file,
+                              batch_size=opt.batch_size,
+                              n_cpu=opt.n_cpu)
+        model = LSTMClassifier(input_dim=opt.input_dim,
+                               hidden_dim=opt.hidden_dim,
+                               layer_dim=opt.layer_dim,
+                               output_dim=opt.num_labels,
+                               dm=dm)
 
-    ################### Test #####################
-    trainer.test(model, dm)
+        checkpoint_callback = ModelCheckpoint(
+            save_top_k=-1,
+            monitor='train_loss_epoch',
+            filename='resnet-{epoch:02d}-{train_loss:.4f}')
+        logger = TensorBoardLogger("tb_logs")
+        trainer = L.Trainer(accelerator='auto',
+                            max_epochs=opt.n_epochs,
+                            callbacks=[checkpoint_callback],
+                            logger=logger)
+        trainer.fit(model, dm)
 
-else:
-    ################### Predict #####################
-    dm = MotionDataModule(annotations_file=opt.annotations_file,
-                          batch_size=opt.batch_size,
-                          n_cpu=opt.n_cpu)
-    model = LSTMClassifier.load_from_checkpoint(opt.prev_ckpt_path)
-    trainer = L.Trainer(accelerator='auto')
-    pred = trainer.predict(model, dm)
-    print(pred)
+        ################### Test #####################
+        trainer.test(model, dm)
+
+    else:
+        ################### Predict #####################
+        dm = MotionDataModule(annotations_file=opt.annotations_file,
+                              batch_size=opt.batch_size,
+                              n_cpu=opt.n_cpu)
+        model = LSTMClassifier.load_from_checkpoint(opt.prev_ckpt_path)
+        trainer = L.Trainer(accelerator='auto')
+        pred = trainer.predict(model, dm)
+        print(pred)
