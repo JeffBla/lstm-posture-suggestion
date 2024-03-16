@@ -1,5 +1,4 @@
-import os
-import json
+from tqdm import tqdm
 import numpy as np
 import pandas as pd
 
@@ -16,14 +15,13 @@ seed = 1
 np.random.seed(seed)
 torch.manual_seed(seed)
 
+LABEL = "waist_twist_correct	waist_twist_aggressively	waist_no_twist	forhand_correct	forehand_wave_aggressively	forehand_no_wave".split(
+    '\t')
+
 
 class MotionDataset(Dataset):
 
-    def __init__(self,
-                 openpose_files_df,
-                 angle_files_df,
-                 label_vtr_set=None,
-                 transform=None):
+    def __init__(self, openpose_files_df, label_vtr_set=None, transform=None):
         self.openpose_files_df = openpose_files_df
         self.label_vtr_set = label_vtr_set
         self.transform = transform
@@ -32,18 +30,21 @@ class MotionDataset(Dataset):
         return len(self.label_vtr_set)
 
     def __getitem__(self, idx):
-        openpose_df = pd.read_csv(
-            self.openpose_files_df[idx]).drop(columns=['frame'])
+        openpose_df = pd.read_csv(self.openpose_files_df[idx]).drop(
+            'frameNumber', axis=1)
 
         if self.transform:
             openpose_df = self.transform(openpose_df)
 
-        ts = to_time_series(openpose_df.values)
+        ts = to_time_series([openpose_df.values])
 
+        ts = torch.tensor(ts, dtype=torch.float32)
         if self.label_vtr_set is None:
             return ts
         else:
-            return ts, self.label_vtr_set[idx]
+            label_vtr = torch.tensor(self.label_vtr_set.iloc[idx].values,
+                                     dtype=torch.float32)
+            return ts[0], label_vtr
 
 
 class MotionDataModule(L.LightningDataModule):
@@ -67,15 +68,29 @@ class MotionDataModule(L.LightningDataModule):
 
     def setup(self, stage):
 
-        def CheckFrameNum(df: pd.DataFrame, filename: str):
-            scale = TimeSeriesScalerMeanVariance(mu=0., std=1.)
+        def CheckNormalize(df: pd.DataFrame, filename: str):
+            normalized_df = (df - df.mean()) / df.std()
+            if not normalized_df.equals(df):
+                normalized_df.to_csv(filename, index=False)
+                return normalized_df
+            return df
 
-            if df['frame'].shape[0] != self.FRAME:
-                ts = to_time_series(df.values)
+        def CheckFrameNum(df: pd.DataFrame, filename: str):
+            if df['frameNumber'].shape[0] != self.FRAME:
+                columns = df.columns
+                ts = to_time_series_dataset([df.values])
                 ts = TimeSeriesResampler(sz=self.FRAME).fit_transform(ts)
-                ts = scale.fit_transform(ts)
-                df = pd.DataFrame(ts[0])
+                df = pd.DataFrame(ts[0], columns=columns)
                 df.to_csv(filename, index=False)
+                return df
+            else:
+                return df
+
+        def CheckNan(df: pd.DataFrame, filename: str):
+            if df.isnull().values.any():
+                print("NaN values found: " + filename)
+                # df.fillna(0, inplace=True)
+                # df.to_csv(filename, index=False)
                 return df
             else:
                 return df
@@ -86,6 +101,7 @@ class MotionDataModule(L.LightningDataModule):
             for (i, row) in annotations_df.iterrows():
                 openpose_df = pd.read_csv(row['openpose_files'])
                 CheckFrameNum(openpose_df)
+                CheckNormalize(openpose_df)
 
             self.pred_dataset = MotionDataset(
                 openpose_files_df=annotations_df['openpose_files'])
@@ -94,13 +110,17 @@ class MotionDataModule(L.LightningDataModule):
             annotations_df = pd.read_csv(self.annotations_file)
 
             # Check the frame number
-            for (i, row) in annotations_df.iterrows():
+            for (i, row) in tqdm(annotations_df.iterrows(),
+                                 total=annotations_df.shape[0]):
                 openpose_df = pd.read_csv(row['openpose_files'])
-                CheckFrameNum(openpose_df)
+                openpose_df = CheckFrameNum(openpose_df, row['openpose_files'])
+                openpose_df = CheckNormalize(openpose_df,
+                                             row['openpose_files'])
+                openpose_df = CheckNan(openpose_df, row['openpose_files'])
 
             self.dataset = MotionDataset(
                 openpose_files_df=annotations_df['openpose_files'],
-                label_vtr_set=annotations_df['label_vtr_set'])
+                label_vtr_set=annotations_df[LABEL])
             generator = torch.Generator().manual_seed(42)
             self.train_dataset, self.test_dataset = random_split(
                 self.dataset,

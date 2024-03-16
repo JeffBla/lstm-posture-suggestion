@@ -10,8 +10,9 @@ import lightning as L
 from torchmetrics.classification import MultilabelAccuracy
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.loggers import TensorBoardLogger
 
-from forehand.dataPreprocess import MotionDataset, MotionDataModule
+from base_dataPreprocess import MotionDataset, MotionDataModule
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--isTrain',
@@ -30,11 +31,11 @@ parser.add_argument("--n_epochs",
                     help="number of epochs of training")
 parser.add_argument("--batch_size",
                     type=int,
-                    default=32,
+                    default=16,
                     help="size of the batches")
 parser.add_argument("--lr",
                     type=float,
-                    default=0.02,
+                    default=0.001,
                     help="adam: learning rate")
 parser.add_argument("--base_lr",
                     type=int,
@@ -63,8 +64,20 @@ parser.add_argument("--sample_interval",
                     help="interval betwen image samples")
 parser.add_argument("--num_labels",
                     type=int,
-                    default=3,
+                    default=6,
                     help="the number of label")
+parser.add_argument("--input_dim",
+                    type=int,
+                    default=34,
+                    help="the input dimension of the lstm")
+parser.add_argument("--hidden_dim",
+                    type=int,
+                    default=256,
+                    help="the hidden dimension of the lstm")
+parser.add_argument("--layer_dim",
+                    type=int,
+                    default=3,
+                    help="the layer dimension of the lstm")
 parser.add_argument(
     "--label_threshold",
     type=float,
@@ -82,7 +95,7 @@ opt = parser.parse_args()
 class LSTMClassifier(L.LightningModule):
     """Very simple implementation of LSTM-based time-series classifier."""
 
-    def __init__(self, input_dim, hidden_dim, layer_dim, output_dim):
+    def __init__(self, input_dim, hidden_dim, layer_dim, output_dim, dm):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.layer_dim = layer_dim
@@ -99,6 +112,21 @@ class LSTMClassifier(L.LightningModule):
         self.loss = None
         self.accuracy = MultilabelAccuracy(num_labels=opt.num_labels,
                                            threshold=opt.label_threshold)
+        self.dm = dm
+        # Save hyperparameters
+        self.save_hyperparameters({
+            'n_epochs': opt.n_epochs,
+            'batch_size': opt.batch_size,
+            'lr': opt.lr,
+            'base_lr': opt.base_lr,
+            'max_lr': opt.max_lr,
+            'n_cpu': opt.n_cpu,
+            'num_labels': opt.num_labels,
+            'input_dim': opt.input_dim,
+            'hidden_dim': opt.hidden_dim,
+            'layer_dim': opt.layer_dim,
+            'label_threshold': opt.label_threshold
+        })
 
     def forward(self, x):
         h0, c0 = self.init_hidden(x)
@@ -108,8 +136,8 @@ class LSTMClassifier(L.LightningModule):
         return out
 
     def init_hidden(self, x):
-        h0 = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
-        c0 = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
+        h0 = torch.zeros(self.layer_dim * 2, x.size(0), self.hidden_dim)
+        c0 = torch.zeros(self.layer_dim * 2, x.size(0), self.hidden_dim)
         return [t.cuda() for t in (h0, c0)]
 
     def training_step(self, batch, batch_idx):
@@ -164,6 +192,13 @@ class LSTMClassifier(L.LightningModule):
                              on_epoch=True,
                              prog_bar=True,
                              logger=True)
+                    self.accuracy(y_hat, y)
+                    self.log('test_acc_epoch',
+                             self.accuracy,
+                             on_step=True,
+                             on_epoch=True,
+                             prog_bar=True,
+                             logger=True)
 
         return super().on_train_batch_end(outputs, batch, batch_idx)
 
@@ -188,7 +223,10 @@ class LSTMClassifier(L.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=opt.lr)
         lr_scheduler_config = {
             "scheduler":
-            CyclicLR(optimizer, base_lr=opt.base_lr, max_lr=opt.max_lr),
+            CyclicLR(optimizer,
+                     base_lr=opt.base_lr,
+                     max_lr=opt.max_lr,
+                     cycle_momentum=False),
             "interval":
             "epoch",
             "frequency":
@@ -204,18 +242,21 @@ if opt.isTrain:
     dm = MotionDataModule(annotations_file=opt.annotations_file,
                           batch_size=opt.batch_size,
                           n_cpu=opt.n_cpu)
-    model = LSTMClassifier(input_dim=10,
-                           hidden_dim=256,
-                           layer_dim=3,
-                           output_dim=9)
+    model = LSTMClassifier(input_dim=opt.input_dim,
+                           hidden_dim=opt.hidden_dim,
+                           layer_dim=opt.layer_dim,
+                           output_dim=opt.num_labels,
+                           dm=dm)
 
     checkpoint_callback = ModelCheckpoint(
         save_top_k=-1,
-        monitor='train_loss',
+        monitor='train_loss_epoch',
         filename='resnet-{epoch:02d}-{train_loss:.4f}')
+    logger = TensorBoardLogger("tb_logs")
     trainer = L.Trainer(accelerator='auto',
                         max_epochs=opt.n_epochs,
-                        callbacks=[checkpoint_callback])
+                        callbacks=[checkpoint_callback],
+                        logger=logger)
     trainer.fit(model, dm)
 
     ################### Test #####################
