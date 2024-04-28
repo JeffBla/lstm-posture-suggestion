@@ -68,25 +68,24 @@ class MotionDataModule(L.LightningDataModule):
 
     def setup(self, stage):
 
-        def OpenposePreprocess(df: pd.DataFrame, filename: str):
+        def DataPreprocess(df: pd.DataFrame, filename: str):
             isSave = False
-            openpose_df = pd.read_csv(filename)
 
-            openpose_df, isSaveTmp = GetTargetColumn(openpose_df)
+            df, isSaveTmp = GetTargetColumn(df)
             isSave = isSave or isSaveTmp
 
-            openpose_df, isSaveTmp = CheckFrameNum(openpose_df)
+            df, isSaveTmp = CheckFrameNum(df)
             isSave = isSave or isSaveTmp
 
-            openpose_df, isSaveTmp = CheckNormalize(openpose_df)
+            df, isSaveTmp = CheckNormalize(df)
             isSave = isSave or isSaveTmp
 
-            openpose_df, isSaveTmp = CheckNan(openpose_df, filename)
+            df, isSaveTmp = CheckNan(df, filename)
             isSave = isSave or isSaveTmp
 
             if isSave:
-                openpose_df.to_csv(filename, index=False)
-            return openpose_df
+                df.to_csv(filename, index=False)
+            return df
 
         def GetTargetColumn(df: pd.DataFrame):
             isSave = False
@@ -128,7 +127,9 @@ class MotionDataModule(L.LightningDataModule):
             # Check the frame number
             for (i, row) in tqdm(annotations_df.iterrows(),
                                  total=annotations_df.shape[0]):
-                OpenposePreprocess(annotations_df, row['openpose_files'])
+                openpose_df = pd.read_csv(row['openpose_files'])
+
+                DataPreprocess(openpose_df, row['openpose_files'])
 
             self.pred_dataset = MotionDataset(
                 openpose_files_df=annotations_df['openpose_files'])
@@ -139,7 +140,9 @@ class MotionDataModule(L.LightningDataModule):
             # Check the frame number
             for (i, row) in tqdm(annotations_df.iterrows(),
                                  total=annotations_df.shape[0]):
-                OpenposePreprocess(annotations_df, row['openpose_files'])
+                openpose_df = pd.read_csv(row['openpose_files'])
+
+                DataPreprocess(openpose_df, row['openpose_files'])
 
             self.dataset = MotionDataset(
                 openpose_files_df=annotations_df['openpose_files'],
