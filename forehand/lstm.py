@@ -17,7 +17,10 @@ from dataPreprocess import MotionDataset, MotionDataModule
 parser = argparse.ArgumentParser()
 parser.add_argument('--isTrain',
                     action='store_true',
-                    help='does it start to training')
+                    help='does it start for training')
+parser.add_argument('--isFinalTest',
+                    action='store_true',
+                    help='does it start for final test')
 parser.add_argument(
     "--annotations_file",
     type=str,
@@ -213,6 +216,13 @@ class LSTMClassifier(L.LightningModule):
                  on_epoch=True,
                  prog_bar=True,
                  logger=True)
+        self.accuracy(y_hat, y)
+        self.log('final_test_acc',
+                 self.accuracy,
+                 on_step=True,
+                 on_epoch=True,
+                 prog_bar=True,
+                 logger=True)
         return loss
 
     def predict_step(self, batch, batch_idx):
@@ -279,6 +289,20 @@ if __name__ == "__main__":
         trainer.fit(model, dm)
 
         ################### Test #####################
+        trainer.test(model, dm)
+
+    elif opt.isFinalTest:
+        ################### Final Test #####################
+        dm = MotionDataModule(annotations_file=opt.annotations_file,
+                              batch_size=opt.batch_size,
+                              n_cpu=opt.n_cpu)
+        model = LSTMClassifier.load_from_checkpoint(opt.prev_ckpt_path,
+                                                    input_dim=opt.input_dim,
+                                                    hidden_dim=opt.hidden_dim,
+                                                    layer_dim=opt.layer_dim,
+                                                    output_dim=opt.num_labels,
+                                                    dm=dm)
+        trainer = L.Trainer(accelerator='auto')
         trainer.test(model, dm)
 
     else:

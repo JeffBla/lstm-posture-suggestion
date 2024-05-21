@@ -102,14 +102,8 @@ class LSTMClassifier(L.LightningModule):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.layer_dim = layer_dim
-        self.rnn = nn.LSTM(input_dim,
-                           hidden_dim,
-                           layer_dim,
-                           batch_first=True,
-                           bidirectional=True)
-        self.fc = nn.Linear(
-            hidden_dim * 2,
-            output_dim)  # Multiply hidden_dim by 2 due to bidirectional LSTM
+        self.rnn = nn.LSTM(input_dim, hidden_dim, layer_dim, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, output_dim)
         self.sigmoid = nn.Sigmoid()
 
         self.loss = None
@@ -140,8 +134,8 @@ class LSTMClassifier(L.LightningModule):
         return out
 
     def init_hidden(self, x):
-        h0 = torch.zeros(self.layer_dim * 2, x.size(0), self.hidden_dim)
-        c0 = torch.zeros(self.layer_dim * 2, x.size(0), self.hidden_dim)
+        h0 = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
+        c0 = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
         return [t.cuda() for t in (h0, c0)]
 
     def training_step(self, batch, batch_idx):
@@ -278,8 +272,8 @@ if __name__ == "__main__":
                                dm=dm)
 
         checkpoint_callback = ModelCheckpoint(
-            save_top_k=-1,
-            monitor='train_loss_epoch',
+            save_top_k=4,
+            monitor='test_loss_epoch',
             filename='resnet-{epoch:02d}-{train_loss:.4f}')
         logger = TensorBoardLogger("tb_logs")
         trainer = L.Trainer(accelerator='auto',

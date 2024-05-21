@@ -155,9 +155,8 @@ class MotionDataModule(L.LightningDataModule):
                 isSave = True
             return df, isSave
 
-        if stage == 'predict':
-            annotations_df = pd.read_csv(self.annotations_file)
-            # Check the frame number
+        annotations_df = pd.read_csv(self.annotations_file)
+        if stage == 'predict' or stage == 'test':
             for (i, row) in tqdm(annotations_df.iterrows(),
                                  total=annotations_df.shape[0]):
                 openpose_df = pd.read_csv(row['openpose_files'])
@@ -166,14 +165,17 @@ class MotionDataModule(L.LightningDataModule):
                 DataPreprocess(openpose_df, row['openpose_files'])
                 DataPreprocess(angle_df, row['angle_files'], True)
 
-            self.pred_dataset = MotionDataset(
-                openpose_files_df=annotations_df['openpose_files'],
-                angle_files_df=annotations_df['angle_files'])
+            if stage == 'predict':
+                self.pred_dataset = MotionDataset(
+                    openpose_files_df=annotations_df['openpose_files'],
+                    angle_files_df=annotations_df['angle_files'])
+            else:
+                self.test_dataset = MotionDataset(
+                    openpose_files_df=annotations_df['openpose_files'],
+                    angle_files_df=annotations_df['angle_files'],
+                    label_vtr_set=annotations_df[LABEL])
 
-        else:
-            annotations_df = pd.read_csv(self.annotations_file)
-
-            # Check the frame number
+        else:  # "fit stage"
             for (i, row) in tqdm(annotations_df.iterrows(),
                                  total=annotations_df.shape[0]):
                 openpose_df = pd.read_csv(row['openpose_files'])
