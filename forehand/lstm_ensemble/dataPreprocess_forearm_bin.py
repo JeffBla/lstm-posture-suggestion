@@ -15,8 +15,7 @@ seed = 1
 np.random.seed(seed)
 torch.manual_seed(seed)
 
-LABEL = "forehand_wave_too_hard	forehand_wave_too_small	forehand_wave_wrong".split(
-    '\t')
+LABEL = "forhand_correct	forhand_wrong".split('\t')
 
 
 class MotionDataset(Dataset):
@@ -156,9 +155,6 @@ class MotionDataModule(L.LightningDataModule):
             return df, isSave
 
         annotations_df = pd.read_csv(self.annotations_file)
-        annotations_df = annotations_df[annotations_df["forhand_correct"] ==
-                                        0].reset_index().drop(
-                                            columns=['index'])
         if stage == 'predict' or stage == 'test':
             for (i, row) in tqdm(annotations_df.iterrows(),
                                  total=annotations_df.shape[0]):

@@ -1,5 +1,8 @@
 import argparse
 
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
@@ -7,12 +10,12 @@ from torch.nn import functional as F
 from torch.optim.lr_scheduler import CyclicLR
 
 import lightning as L
-from torchmetrics.classification import MulticlassAccuracy, MulticlassRecall, MulticlassPrecision, MulticlassF1Score
+from torchmetrics.classification import MulticlassAccuracy, MulticlassRecall, MulticlassPrecision, MulticlassF1Score, MulticlassConfusionMatrix
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
 
-from dataPreprocess_rotation import MotionDataset, MotionDataModule
+from dataPreprocess_forearm_bin import MotionDataset, MotionDataModule
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--isTrain',
@@ -34,7 +37,7 @@ parser.add_argument("--n_epochs",
                     help="number of epochs of training")
 parser.add_argument("--batch_size",
                     type=int,
-                    default=16,
+                    default=8,
                     help="size of the batches")
 parser.add_argument("--lr",
                     type=float,
@@ -42,7 +45,7 @@ parser.add_argument("--lr",
                     help="adam: learning rate")
 parser.add_argument("--base_lr",
                     type=int,
-                    default=1e-5,
+                    default=1e-4,
                     help="the base learning rate of the cyclic learning rate")
 parser.add_argument("--max_lr",
                     type=float,
@@ -67,7 +70,7 @@ parser.add_argument("--sample_interval",
                     help="interval betwen image samples")
 parser.add_argument("--num_labels",
                     type=int,
-                    default=4,
+                    default=2,
                     help="the number of label")
 parser.add_argument("--input_dim",
                     type=int,
@@ -106,13 +109,17 @@ class LSTMClassifier(L.LightningModule):
         self.fc = nn.Linear(
             hidden_dim,
             output_dim)  # Multiply hidden_dim by 2 due to bidirectional LSTM
-        self.softmax = nn.Softmax()
+        self.sigmoid = nn.Sigmoid()
 
         self.loss = None
         self.accuracy = MulticlassAccuracy(num_classes=opt.num_labels)
         self.recall = MulticlassRecall(num_classes=opt.num_labels)
         self.precision = MulticlassPrecision(num_classes=opt.num_labels)
         self.f1_score = MulticlassF1Score(num_classes=opt.num_labels)
+        self.confusion_matrix = MulticlassConfusionMatrix(
+            num_classes=opt.num_labels)
+        self.finalTestPreds = None
+        self.finalTestTargets = None
         self.dm = dm
         # Save hyperparameters
         self.save_hyperparameters({
@@ -134,7 +141,7 @@ class LSTMClassifier(L.LightningModule):
         h0, c0 = self.init_hidden(x)
         out, (hn, cn) = self.rnn(x, (h0, c0))
         out = self.fc(out[:, -1, :])  # Extract the last time step output
-        out = self.softmax(out)
+        # out = self.softmax(out) // Do not use softmax here, as it is included in the loss function
         return out
 
     def init_hidden(self, x):
@@ -147,7 +154,7 @@ class LSTMClassifier(L.LightningModule):
         self.train()
         x, y = batch
         y_hat = self(x)
-        loss = F.cross_entropy(y_hat, y)
+        loss = F.binary_cross_entropy_with_logits(y_hat, y)
         self.loss = loss
         self.log('train_loss_step',
                  loss,
@@ -155,6 +162,8 @@ class LSTMClassifier(L.LightningModule):
                  on_epoch=True,
                  prog_bar=True,
                  logger=True)
+        y = torch.max(y, 1)[1]
+        y_hat = self.sigmoid(y_hat)
         self.accuracy(y_hat, y)
         self.log('train_acc_step',
                  self.accuracy,
@@ -186,13 +195,15 @@ class LSTMClassifier(L.LightningModule):
                     x, y = test_batch
                     x, y = x.to(self.device), y.to(self.device)
                     y_hat = self(x)
-                    loss = F.cross_entropy(y_hat, y)
+                    loss = F.binary_cross_entropy_with_logits(y_hat, y)
                     self.log('test_loss_epoch',
                              loss,
                              on_step=True,
                              on_epoch=True,
                              prog_bar=True,
                              logger=True)
+                    y = torch.max(y, 1)[1]
+                    y_hat = self.sigmoid(y_hat)
                     self.accuracy(y_hat, y)
                     self.log('test_acc_epoch',
                              self.accuracy,
@@ -206,13 +217,21 @@ class LSTMClassifier(L.LightningModule):
     def test_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self(x)
-        loss = F.cross_entropy(y_hat, y)
+        loss = F.binary_cross_entropy_with_logits(y_hat, y)
         self.log('final_test_loss',
                  loss,
                  on_step=True,
                  on_epoch=True,
                  prog_bar=True,
                  logger=True)
+        y = torch.max(y, 1)[1]
+        y_hat = self.sigmoid(y_hat)
+        if self.finalTestPreds is None:
+            self.finalTestPreds = y_hat.clone().detach()
+            self.finalTestTargets = y.clone().detach()
+        else:
+            self.finalTestPreds = torch.cat([self.finalTestPreds, y_hat])
+            self.finalTestTargets = torch.cat([self.finalTestTargets, y])
         self.accuracy(y_hat, y)
         self.log('final_test_acc',
                  self.accuracy,
@@ -242,6 +261,19 @@ class LSTMClassifier(L.LightningModule):
                  prog_bar=True,
                  logger=True)
         return loss
+
+    def on_test_epoch_end(self):
+        confusion_matrix = self.confusion_matrix(self.finalTestPreds,
+                                                 self.finalTestTargets)
+
+        df_cm = pd.DataFrame(confusion_matrix.cpu().numpy(),
+                             index=range(opt.num_labels),
+                             columns=range(opt.num_labels))
+        plt.figure(figsize=(10, 7))
+        fig_ = sns.heatmap(df_cm, annot=True, cmap='Spectral').get_figure()
+        plt.close(fig_)
+
+        self.logger.experiment.add_figure("Confusion matrix", fig_, 0)
 
     def predict_step(self, batch, batch_idx):
         pred = self(batch)
