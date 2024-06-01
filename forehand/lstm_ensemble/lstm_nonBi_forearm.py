@@ -31,25 +31,32 @@ parser.add_argument(
     help=
     "the annotations file path(with openpose csv path, angle csv path, and label)"
 )
+parser.add_argument(
+    "--test_annotations_file",
+    type=str,
+    default='',
+    help=
+    "the test annotations file path(with openpose csv path, angle csv path, and label)"
+)
 parser.add_argument("--n_epochs",
                     type=int,
                     default=100,
                     help="number of epochs of training")
 parser.add_argument("--batch_size",
                     type=int,
-                    default=8,
+                    default=16,
                     help="size of the batches")
 parser.add_argument("--lr",
                     type=float,
-                    default=0.01,
+                    default=0.0001,
                     help="adam: learning rate")
 parser.add_argument("--base_lr",
                     type=int,
-                    default=1e-4,
+                    default=1e-6,
                     help="the base learning rate of the cyclic learning rate")
 parser.add_argument("--max_lr",
                     type=float,
-                    default=1e-2,
+                    default=1e-4,
                     help="the max learning rate of the cyclic learning rate")
 parser.add_argument("--b1",
                     type=float,
@@ -64,10 +71,6 @@ parser.add_argument(
     type=int,
     default=4,
     help="number of cpu threads to use during batch generation")
-parser.add_argument("--sample_interval",
-                    type=int,
-                    default=400,
-                    help="interval betwen image samples")
 parser.add_argument("--num_labels",
                     type=int,
                     default=3,
@@ -78,19 +81,12 @@ parser.add_argument("--input_dim",
                     help="the input dimension of the lstm")
 parser.add_argument("--hidden_dim",
                     type=int,
-                    default=256,
+                    default=512,
                     help="the hidden dimension of the lstm")
 parser.add_argument("--layer_dim",
                     type=int,
-                    default=3,
+                    default=5,
                     help="the layer dimension of the lstm")
-parser.add_argument(
-    "--label_threshold",
-    type=float,
-    default=0.5,
-    help=
-    "Threshold for transforming probability to binary (0,1) predictions in label"
-)
 parser.add_argument("--prev_ckpt_path",
                     type=str,
                     default=None,
@@ -133,7 +129,6 @@ class LSTMClassifier(L.LightningModule):
             'input_dim': opt.input_dim,
             'hidden_dim': opt.hidden_dim,
             'layer_dim': opt.layer_dim,
-            'label_threshold': opt.label_threshold,
             'output_dim': output_dim,
         })
 
@@ -159,16 +154,6 @@ class LSTMClassifier(L.LightningModule):
         self.log('train_loss_step',
                  loss,
                  on_step=True,
-                 on_epoch=True,
-                 prog_bar=True,
-                 logger=True)
-        y = torch.max(y, 1)[1]
-        y_hat = self.softmax(y_hat)
-        self.accuracy(y_hat, y)
-        self.log('train_acc_step',
-                 self.accuracy,
-                 on_step=True,
-                 on_epoch=True,
                  prog_bar=True,
                  logger=True)
         return loss
@@ -181,33 +166,35 @@ class LSTMClassifier(L.LightningModule):
                  on_epoch=True,
                  prog_bar=True,
                  logger=True)
-        self.log('train_acc_epoch',
-                 self.accuracy,
-                 on_step=True,
-                 on_epoch=True,
-                 prog_bar=True,
-                 logger=True)
         if batch_idx % 100 == 0:
-            self.eval()
-            with torch.no_grad():
-                test_dataloader = self.dm.test_dataloader()
-                for test_batch in test_dataloader:
-                    x, y = test_batch
-                    x, y = x.to(self.device), y.to(self.device)
-                    y_hat = self(x)
-                    loss = F.cross_entropy(y_hat, y)
+            if opt.test_annotations_file != '':
+                losses = np.array([])
+                acc = 0
+                cnt = 0
+                self.eval()
+                with torch.no_grad():
+                    test_dataloader = self.dm.test_dataloader()
+                    for test_batch in test_dataloader:
+                        x, y = test_batch
+                        x, y = x.to(self.device), y.to(self.device)
+                        y_hat = self(x)
+                        loss = F.cross_entropy(y_hat, y)
+                        losses = np.append(losses, loss.item())
+
+                        y = torch.max(y, 1)[1]
+                        y_hat = torch.max(self.softmax(y_hat), 1)[1]
+                        acc += (y == y_hat).sum().item()
+                        cnt += len(y)
+
+                    loss = np.mean(losses)
+                    acc = acc / cnt
                     self.log('test_loss_epoch',
                              loss,
-                             on_step=True,
                              on_epoch=True,
                              prog_bar=True,
                              logger=True)
-                    y = torch.max(y, 1)[1]
-                    y_hat = self.softmax(y_hat)
-                    self.accuracy(y_hat, y)
                     self.log('test_acc_epoch',
-                             self.accuracy,
-                             on_step=True,
+                             acc,
                              on_epoch=True,
                              prog_bar=True,
                              logger=True)
@@ -220,7 +207,6 @@ class LSTMClassifier(L.LightningModule):
         loss = F.cross_entropy(y_hat, y)
         self.log('final_test_loss',
                  loss,
-                 on_step=True,
                  on_epoch=True,
                  prog_bar=True,
                  logger=True)
@@ -232,37 +218,34 @@ class LSTMClassifier(L.LightningModule):
         else:
             self.finalTestPreds = torch.cat([self.finalTestPreds, y_hat])
             self.finalTestTargets = torch.cat([self.finalTestTargets, y])
-        self.accuracy(y_hat, y)
-        self.log('final_test_acc',
-                 self.accuracy,
-                 on_step=True,
-                 on_epoch=True,
-                 prog_bar=True,
-                 logger=True)
-        self.recall(y_hat, y)
-        self.log('final_test_recall',
-                 self.recall,
-                 on_step=True,
-                 on_epoch=True,
-                 prog_bar=True,
-                 logger=True)
-        self.precision(y_hat, y)
-        self.log('final_test_precision',
-                 self.precision,
-                 on_step=True,
-                 on_epoch=True,
-                 prog_bar=True,
-                 logger=True)
-        self.f1_score(y_hat, y)
-        self.log('final_test_f1_score',
-                 self.f1_score,
-                 on_step=True,
-                 on_epoch=True,
-                 prog_bar=True,
-                 logger=True)
         return loss
 
     def on_test_epoch_end(self):
+        self.accuracy(self.finalTestPreds, self.finalTestTargets)
+        self.log('final_test_acc',
+                 self.accuracy,
+                 on_epoch=True,
+                 prog_bar=True,
+                 logger=True)
+        self.recall(self.finalTestPreds, self.finalTestTargets)
+        self.log('final_test_recall',
+                 self.recall,
+                 on_epoch=True,
+                 prog_bar=True,
+                 logger=True)
+        self.precision(self.finalTestPreds, self.finalTestTargets)
+        self.log('final_test_precision',
+                 self.precision,
+                 on_epoch=True,
+                 prog_bar=True,
+                 logger=True)
+        self.f1_score(self.finalTestPreds, self.finalTestTargets)
+        self.log('final_test_f1_score',
+                 self.f1_score,
+                 on_epoch=True,
+                 prog_bar=True,
+                 logger=True)
+
         confusion_matrix = self.confusion_matrix(self.finalTestPreds,
                                                  self.finalTestTargets)
 
@@ -274,6 +257,13 @@ class LSTMClassifier(L.LightningModule):
         plt.close(fig_)
 
         self.logger.experiment.add_figure("Confusion matrix", fig_, 0)
+
+        # csv output the final test preds
+        preds = torch.max(self.finalTestPreds, 1)[1].cpu().numpy()
+        targets = self.finalTestTargets.cpu().numpy()
+        out = np.stack((preds, targets), axis=1)
+        out_df = pd.DataFrame(out)
+        out_df.to_csv('final_test_preds.csv', index=False)
 
     def predict_step(self, batch, batch_idx):
         pred = self(batch)
@@ -319,6 +309,7 @@ if __name__ == "__main__":
     if opt.isTrain:
         ################### Train #####################
         dm = MotionDataModule(annotations_file=opt.annotations_file,
+                              test_annotations_file=opt.test_annotations_file,
                               batch_size=opt.batch_size,
                               n_cpu=opt.n_cpu)
         model = LSTMClassifier(input_dim=opt.input_dim,
