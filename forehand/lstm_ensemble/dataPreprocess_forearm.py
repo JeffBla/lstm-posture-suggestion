@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, Dataset, random_split
 import lightning as L
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS, STEP_OUTPUT, TRAIN_DATALOADERS
 
-seed = 1
+seed = 42
 np.random.seed(seed)
 torch.manual_seed(seed)
 
@@ -61,10 +61,12 @@ class MotionDataModule(L.LightningDataModule):
     def __init__(self,
                  batch_size: int = 32,
                  annotations_file: str = None,
+                 test_annotations_file: str = None,
                  n_cpu: int = 2):
         super().__init__()
         self.batch_size = batch_size
         self.annotations_file = annotations_file
+        self.test_annotations_file = test_annotations_file
         self.n_cpu = n_cpu
         self.train_test_spilt = 0.7
         # the len of ts should be the same in lstm
@@ -156,6 +158,8 @@ class MotionDataModule(L.LightningDataModule):
             return df, isSave
 
         annotations_df = pd.read_csv(self.annotations_file)
+        if self.test_annotations_file is not None and self.test_annotations_file != "":
+            test_annotations_df = pd.read_csv(self.test_annotations_file)
         if stage == 'predict' or stage == 'test':
             for (i, row) in tqdm(annotations_df.iterrows(),
                                  total=annotations_df.shape[0]):
@@ -188,10 +192,23 @@ class MotionDataModule(L.LightningDataModule):
                 openpose_files_df=annotations_df['openpose_files'],
                 angle_files_df=annotations_df['angle_files'],
                 label_vtr_set=annotations_df[LABEL])
-            generator = torch.Generator().manual_seed(42)
-            self.train_dataset, self.test_dataset = random_split(
-                self.dataset,
-                [self.train_test_spilt, 1 - self.train_test_spilt], generator)
+            self.train_dataset = self.dataset
+
+            # test dataset
+            if self.test_annotations_file is not None and self.test_annotations_file != "":
+                for (i, row) in tqdm(test_annotations_df.iterrows(),
+                                     total=test_annotations_df.shape[0]):
+                    openpose_df = pd.read_csv(row['openpose_files'])
+                    angle_df = pd.read_csv(row['angle_files'])
+
+                    DataPreprocess(openpose_df, row['openpose_files'])
+                    DataPreprocess(angle_df, row['angle_files'], True)
+
+                    self.test_dataset = MotionDataset(
+                        openpose_files_df=test_annotations_df[
+                            'openpose_files'],
+                        angle_files_df=test_annotations_df['angle_files'],
+                        label_vtr_set=test_annotations_df[LABEL])
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         return DataLoader(self.train_dataset,
